@@ -177,10 +177,23 @@ var errCorpus = []struct {
 	{"%*d", nil, "ArgumentError", "too few arguments"},
 }
 
-// rubyAvailable reports whether the ruby oracle can be invoked.
+// rubyAvailable reports whether a usable MRI oracle is on PATH. The corpus
+// pins MRI 4.0 semantics (some error messages changed across versions), so an
+// older system ruby — which CI runners often pre-install on the arch and
+// Windows lanes — is treated as absent, leaving the deterministic golden test
+// (which needs no ruby) to carry the 100% coverage gate. Only the ruby-4.0
+// test lane runs the live differential.
 func rubyAvailable() bool {
-	_, err := exec.LookPath("ruby")
-	return err == nil
+	if _, err := exec.LookPath("ruby"); err != nil {
+		return false
+	}
+	out, err := exec.Command("ruby", "-e", "print RUBY_VERSION").Output()
+	if err != nil {
+		return false
+	}
+	major := strings.SplitN(string(out), ".", 2)[0]
+	n, err := strconv.Atoi(major)
+	return err == nil && n >= 4
 }
 
 // rubyLiteral renders a Go argument as the Ruby source literal the oracle uses.
