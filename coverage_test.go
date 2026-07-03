@@ -54,6 +54,46 @@ func TestAltFormCorners(t *testing.T) {
 	}
 }
 
+// TestBignumSlowPath covers the arbitrary-precision integer conversions
+// (renderIntBig) and the goValue *big.Int branches, which the int64 fast path
+// now bypasses for operands that fit in int64. The expected strings are the
+// output of MRI (CRuby) 4.0.5 for the same directives, so this also pins the
+// Bignum formatting to CRuby byte-for-byte. The magnitude exceeds int64, so
+// toValue stores it as a *big.Int and the fast path declines it.
+func TestBignumSlowPath(t *testing.T) {
+	b, _ := new(big.Int).SetString("12345678901234567890", 10)  // > math.MaxInt64
+	n, _ := new(big.Int).SetString("-12345678901234567890", 10) // < math.MinInt64
+	// 2^63 exceeds int64 yet is exactly representable as a float64, so the
+	// Bignum->Float conversion is lossless and pins %f/%e byte-for-byte.
+	p63, _ := new(big.Int).SetString("9223372036854775808", 10)
+	cases := []struct {
+		format, want string
+		arg          any
+	}{
+		{"%d", "12345678901234567890", b},                 // signed base-10, positive
+		{"%d", "-12345678901234567890", n},                // signed base-10, negative
+		{"%+x", "+ab54a98ceb1f0ad2", b},                   // signed (plus) non-decimal base
+		{"% x", " ab54a98ceb1f0ad2", b},                   // signed (space) non-decimal base
+		{"%+#x", "+0xab54a98ceb1f0ad2", b},                // signed, alternate-form prefix
+		{"%x", "ab54a98ceb1f0ad2", b},                     // unsigned, positive
+		{"%#x", "0xab54a98ceb1f0ad2", b},                  // unsigned, positive, alternate form
+		{"%x", "..f54ab567314e0f52e", n},                  // unsigned, negative (two's-complement dots)
+		{"%#x", "0x..f54ab567314e0f52e", n},               // negative dotted, alternate form (base != 8)
+		{"%#o", "..76522532547142470172456", n},           // negative dotted octal (base == 8, no extra prefix)
+		{"%X", "..F54AB567314E0F52E", n},                  // uppercase negative dotted
+		{"%o", "1255245230635307605322", b},               // octal, positive
+		{"%s", "12345678901234567890", b},                 // to_s of a Bignum (goValue.intString)
+		{"%f", "9223372036854775808.000000", p63},         // Bignum -> Float (goValue.Float)
+		{"%e", "9.223372e+18", p63},                       // Bignum -> Float, exponent form
+	}
+	for _, c := range cases {
+		got, err := Sprintf(c.format, c.arg)
+		if err != nil || got != c.want {
+			t.Errorf("Sprintf(%q, %v) = %q, %v; want %q", c.format, c.arg, got, err, c.want)
+		}
+	}
+}
+
 // TestPanicPassthrough proves Format re-panics a non-*Error panic rather than
 // swallowing it, so a genuine bug is not masked as a format error.
 func TestPanicPassthrough(t *testing.T) {

@@ -97,6 +97,9 @@ type formatter struct {
 // run walks the format string, copying literal bytes and dispatching each
 // conversion, and returns the assembled output.
 func (f *formatter) run() string {
+	// Pre-size the output for the common case where the result is close to the
+	// format string's length, avoiding the Builder's early re-growths.
+	f.b.Grow(len(f.format) + 16)
 	for f.pos < len(f.format) {
 		c := f.format[f.pos]
 		if c != '%' {
@@ -430,10 +433,21 @@ func (f *formatter) render(s *spec) {
 	}
 }
 
+// intFast is an optional Value fast-path: a Value that reports itself as an
+// int64 without allocating a *big.Int. renderInt uses it to keep the common
+// small-integer conversion out of math/big; a Value that does not implement it,
+// or whose magnitude exceeds int64 (a Bignum), falls back to the Int() path.
+type intFast interface {
+	// Int64Fast returns the value as an int64 with ok=true only when the value
+	// is a genuine integer whose magnitude fits in int64 and whose formatting is
+	// byte-identical to the *big.Int path. Non-integers, Bignums, Floats, and
+	// String operands report ok=false so the caller uses the precise path.
+	Int64Fast() (n int64, ok bool)
+}
+
 // intArg coerces the directive's argument to an arbitrary-precision integer,
 // raising the MRI TypeError/ArgumentError on a non-integer / unparsable string.
-func (f *formatter) intArg(s *spec) *big.Int {
-	v := f.nextArg(s)
+func coerceInt(v Value) *big.Int {
 	z, perr, ok := v.Int()
 	if !ok {
 		panic(typeError("can't convert " + v.ClassName() + " into Integer"))
@@ -446,9 +460,58 @@ func (f *formatter) intArg(s *spec) *big.Int {
 
 // renderInt formats an integer in the given base. Negative values use Ruby's
 // two's-complement "dot" notation (..f / ..7 / ..1) unless the + or space flag
-// forces a signed rendering. upper selects uppercase digits (X/B).
+// forces a signed rendering. upper selects uppercase digits (X/B). Values that
+// fit in int64 take an allocation-free path; Bignums, Floats, and String
+// operands fall back to the arbitrary-precision path.
 func (f *formatter) renderInt(s *spec, base int, upper bool) {
-	z := f.intArg(s)
+	v := f.nextArg(s)
+	if iv, ok := v.(intFast); ok {
+		if n, isInt := iv.Int64Fast(); isInt {
+			f.renderIntFast(s, base, upper, n)
+			return
+		}
+	}
+	f.renderIntBig(s, base, upper, coerceInt(v))
+}
+
+// renderIntFast formats an int64 without touching math/big. It reproduces
+// renderIntBig's output byte-for-byte, deferring the one case that genuinely
+// needs arbitrary precision — a negative value in an unsigned base, whose Ruby
+// two's-complement "dot" notation is computed with big arithmetic.
+func (f *formatter) renderIntFast(s *spec, base int, upper bool, n int64) {
+	neg := n < 0
+	signed := base == 10 || s.plusFlag || s.spaceFlag
+	if neg && !signed {
+		f.renderIntBig(s, base, upper, big.NewInt(n))
+		return
+	}
+
+	// uint64(-n) yields the correct magnitude even for math.MinInt64, where -n
+	// wraps back to MinInt64 and its uint64 reinterpretation is |MinInt64|.
+	mag := uint64(n)
+	if neg {
+		mag = uint64(-n)
+	}
+	digits := strconv.FormatUint(mag, base)
+	var prefix, sign string
+	switch {
+	case neg:
+		sign = "-"
+	case s.plusFlag:
+		sign = "+"
+	case s.spaceFlag:
+		sign = " "
+	}
+	if s.hashFlag {
+		prefix = altPrefix(base, upper, mag != 0)
+	}
+	f.emitInt(s, base, upper, sign, prefix, digits, false, n == 0)
+}
+
+// renderIntBig is the arbitrary-precision integer path, used for Bignums, Floats
+// truncated to integers, String operands, and the negative-in-unsigned-base
+// two's-complement case.
+func (f *formatter) renderIntBig(s *spec, base int, upper bool, z *big.Int) {
 	neg := z.Sign() < 0
 	signed := base == 10 || s.plusFlag || s.spaceFlag
 
@@ -482,11 +545,17 @@ func (f *formatter) renderInt(s *spec, base int, upper bool) {
 			prefix = altPrefix(base, upper, z.Sign() != 0)
 		}
 	}
+	f.emitInt(s, base, upper, sign, prefix, digits, dotted, z.Sign() == 0)
+}
 
+// emitInt applies the precision, uppercasing, and width padding shared by the
+// int64 and *big.Int paths, then writes the field. isZero marks a zero magnitude
+// (for precision's zero special-cases) and dotted a two's-complement rendering.
+func (f *formatter) emitInt(s *spec, base int, upper bool, sign, prefix, digits string, dotted, isZero bool) {
 	// Precision sets the minimum digit count (excluding sign/prefix), with
 	// MRI's zero-value special cases.
 	if s.hasPrec {
-		digits, prefix = applyIntPrecision(digits, prefix, s, base, z.Sign() == 0, dotted)
+		digits, prefix = applyIntPrecision(digits, prefix, s, base, isZero, dotted)
 	}
 	if upper {
 		digits = strings.ToUpper(digits)
