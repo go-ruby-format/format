@@ -118,8 +118,9 @@ func (n *NamedArgs) Float() (float64, error, bool) { return 0, nil, false }
 // not construct Values by hand.
 type goValue struct {
 	kind  Kind
-	s     string // for KindString/KindSymbol/KindOther: the textual value
-	i     *big.Int
+	s     string  // for KindString/KindSymbol/KindOther: the textual value
+	i64   int64   // for KindInteger when i == nil: the small-integer value
+	i     *big.Int // for KindInteger: set only for a magnitude exceeding int64
 	f     float64
 	cls   string
 	elems []Value // for KindArray
@@ -133,7 +134,7 @@ func (g goValue) ToS() string {
 	case KindNil:
 		return ""
 	case KindInteger:
-		return g.i.String()
+		return g.intString()
 	case KindFloat:
 		return rubyFloatToS(g.f)
 	case KindArray:
@@ -148,7 +149,7 @@ func (g goValue) Inspect() string {
 	case KindNil:
 		return "nil"
 	case KindInteger:
-		return g.i.String()
+		return g.intString()
 	case KindFloat:
 		return rubyFloatToS(g.f)
 	case KindString:
@@ -171,10 +172,32 @@ func (g goValue) Inspect() string {
 	}
 }
 
+// intString renders a KindInteger's textual value, using the allocation-free
+// int64 form when the value fits (i == nil) and the *big.Int form otherwise.
+func (g goValue) intString() string {
+	if g.i != nil {
+		return g.i.String()
+	}
+	return strconv.FormatInt(g.i64, 10)
+}
+
+// Int64Fast reports a genuine int64-range integer without allocating a *big.Int,
+// letting the formatter's integer conversions skip math/big. Bignums (i != nil),
+// floats, strings, and non-numeric values report ok=false.
+func (g goValue) Int64Fast() (int64, bool) {
+	if g.kind == KindInteger && g.i == nil {
+		return g.i64, true
+	}
+	return 0, false
+}
+
 func (g goValue) Int() (*big.Int, error, bool) {
 	switch g.kind {
 	case KindInteger:
-		return new(big.Int).Set(g.i), nil, true
+		if g.i != nil {
+			return new(big.Int).Set(g.i), nil, true
+		}
+		return big.NewInt(g.i64), nil, true
 	case KindFloat:
 		bi, _ := big.NewFloat(g.f).Int(nil)
 		return bi, nil, true
@@ -189,6 +212,9 @@ func (g goValue) Int() (*big.Int, error, bool) {
 func (g goValue) Float() (float64, error, bool) {
 	switch g.kind {
 	case KindInteger:
+		if g.i == nil {
+			return float64(g.i64), nil, true
+		}
 		f := new(big.Float).SetInt(g.i)
 		v, _ := f.Float64()
 		return v, nil, true
@@ -213,10 +239,13 @@ func toValue(a any) Value {
 	case bool:
 		return goValue{kind: KindOther, s: strconv.FormatBool(x), cls: boolClass(x)}
 	case int:
-		return goValue{kind: KindInteger, i: big.NewInt(int64(x)), cls: "Integer"}
+		return goValue{kind: KindInteger, i64: int64(x), cls: "Integer"}
 	case int64:
-		return goValue{kind: KindInteger, i: big.NewInt(x), cls: "Integer"}
+		return goValue{kind: KindInteger, i64: x, cls: "Integer"}
 	case *big.Int:
+		if x.IsInt64() {
+			return goValue{kind: KindInteger, i64: x.Int64(), cls: "Integer"}
+		}
 		return goValue{kind: KindInteger, i: new(big.Int).Set(x), cls: "Integer"}
 	case float64:
 		return goValue{kind: KindFloat, f: x, cls: "Float"}
