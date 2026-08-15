@@ -122,6 +122,12 @@ func buildCorpus() []caseT {
 		c("%{x}", map[string]any{"x": "hi"}), c("val=%{x}!", map[string]any{"x": 99}),
 		c("%<name>s says %<x>d", hash), c("%<f>.1f", hash),
 		c("%{name}", hash), c("%<name>-10s|", hash),
+		// A named/braced reference at every position within the directive:
+		// after the width, after the precision, and (braced) with flags,
+		// width, and precision.
+		c("%5<x>d", map[string]any{"x": 7}), c("%.3<f>f", hash),
+		c("%+15<f>.5f", hash), c("%5{x}", map[string]any{"x": "hi"}),
+		c("%-8.2{name}", hash),
 
 		// Argument indexing and width/precision from args.
 		c("%d %d", 1, 2), c("%2$s %1$s", "a", "b"), c("%*d", 5, 42),
@@ -162,6 +168,10 @@ var errCorpus = []struct {
 	{"%{x}", []any{map[string]any{"y": 1}}, "KeyError", "key{x} not found"},
 	{"%<x>d", []any{1}, "ArgumentError", "one hash required"},
 	{"%{x}", []any{1}, "ArgumentError", "one hash required"},
+	// A named reference cannot be mixed with a positional (auto or numbered) one.
+	{"%d %<x>d", []any{1, map[string]any{"x": 2}}, "ArgumentError", "named<x> after unnumbered(1)"},
+	{"%d %{x}", []any{1, map[string]any{"x": 2}}, "ArgumentError", "named{x} after unnumbered(1)"},
+	{"%1$d %<x>d", []any{1, map[string]any{"x": 2}}, "ArgumentError", "named<x> after numbered"},
 	{"%d", []any{"notnum"}, "ArgumentError", `invalid value for Integer(): "notnum"`},
 	{"%f", []any{"notnum"}, "ArgumentError", `invalid value for Float(): "notnum"`},
 	{"%d", []any{nil}, "TypeError", "can't convert nil into Integer"},

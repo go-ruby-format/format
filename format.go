@@ -92,6 +92,7 @@ type formatter struct {
 	argIdx     int  // next auto (unnumbered) positional argument
 	usedNumber bool // a %n$ reference has been used
 	usedAuto   bool // an unnumbered reference has been used
+	usedNamed  bool // a %<name>/%{name} reference has been used
 }
 
 // run walks the format string, copying literal bytes and dispatching each
@@ -128,8 +129,9 @@ type spec struct {
 	argNum    int // 1-based explicit %n$ reference, 0 when absent
 	hasArgNum bool
 
-	namedRef Value // the %<name> value, when hasNamed
+	namedRef Value // the %<name>/%{name} value, when hasNamed
 	hasNamed bool
+	braced   bool // a %{name} reference: rendered as the value's to_s, self-terminating
 
 	verb byte
 }
@@ -142,13 +144,14 @@ func (f *formatter) directive() {
 	if f.pos >= len(f.format) {
 		panic(argumentError("incomplete format specifier; use %% (double %) instead"))
 	}
-	// %{name}: insert the named value's to_s, with no conversion.
-	if f.format[f.pos] == '{' {
-		f.bracedReference()
-		return
-	}
 	var s spec
 	sawNumeric := f.parseFlagsWidthPrec(&s)
+	// %{name}: render the named value's to_s with the parsed flags/width/precision
+	// and no conversion letter (the character after "}" is a literal).
+	if s.braced {
+		f.renderStr(&s, s.namedRef.ToS())
+		return
+	}
 	if s.verb == '%' {
 		f.b.WriteByte('%')
 		return
@@ -167,17 +170,46 @@ func (f *formatter) directive() {
 	f.render(&s)
 }
 
-// bracedReference handles %{name}: it inserts the to_s of the named value with
-// no further formatting, raising KeyError when the key is absent.
-func (f *formatter) bracedReference() {
-	end := strings.IndexByte(f.format[f.pos:], '}')
+// consumeRef handles a %<name> or %{name} reference token beginning at f.pos,
+// resolving its value onto s. A reference may appear at any position within a
+// directive (before or after the flags, width, and precision), so the caller
+// invokes it at each of those points. A %<name> token only binds the argument
+// and returns false so parsing of the remaining flags/width/precision/verb
+// continues; a %{name} token is self-terminating (rendered as the value's to_s)
+// and returns true. Mixing a named reference with a positional (auto or
+// numbered) one is an MRI ArgumentError.
+func (f *formatter) consumeRef(s *spec) (braced bool) {
+	open := f.format[f.pos]
+	closeCh := byte('>')
+	if open == '{' {
+		closeCh = '}'
+	}
+	end := strings.IndexByte(f.format[f.pos:], closeCh)
 	if end < 0 {
 		panic(argumentError("malformed name - unmatched parenthesis"))
 	}
 	name := f.format[f.pos+1 : f.pos+end]
-	v := f.namedValue(name, '{')
-	f.b.WriteString(v.ToS())
+	if f.usedAuto {
+		panic(argumentError("named" + string(open) + name + string(closeCh) +
+			" after unnumbered(" + strconv.Itoa(f.argIdx) + ")"))
+	}
+	if f.usedNumber {
+		panic(argumentError("named" + string(open) + name + string(closeCh) + " after numbered"))
+	}
+	f.usedNamed = true
+	s.namedRef = f.namedValue(name, open)
+	s.hasNamed = true
 	f.pos += end + 1
+	if open == '{' {
+		s.braced = true
+		return true
+	}
+	return false
+}
+
+// atRef reports whether the next byte begins a %<name>/%{name} reference token.
+func (f *formatter) atRef() bool {
+	return f.pos < len(f.format) && (f.format[f.pos] == '<' || f.format[f.pos] == '{')
 }
 
 // parseFlagsWidthPrec consumes the [n$][flags][width][.prec]verb body of a
@@ -201,17 +233,13 @@ func (f *formatter) parseFlagsWidthPrec(s *spec) (sawNumeric bool) {
 			s.zeroFlag = true
 		case '#':
 			s.hashFlag = true
-		case '<':
-			// %<name>: bind the conversion to the named value. Flags may appear
-			// on either side of the reference, so this lives in the flag loop.
-			end := strings.IndexByte(f.format[f.pos:], '>')
-			if end < 0 {
-				panic(argumentError("malformed name - unmatched parenthesis"))
+		case '<', '{':
+			// A %<name>/%{name} reference may appear among the flags. %{name}
+			// terminates the directive; %<name> binds the argument and parsing
+			// continues.
+			if f.consumeRef(s) {
+				return sawNumeric
 			}
-			name := f.format[f.pos+1 : f.pos+end]
-			s.namedRef = f.namedValue(name, '<')
-			s.hasNamed = true
-			f.pos += end + 1
 			f.maybeArgNum(s)
 			continue
 		default:
@@ -240,6 +268,13 @@ flagsDone:
 		s.width, s.hasWidth = w, true
 	}
 
+	// A %<name>/%{name} reference may sit between the width and the precision.
+	if f.atRef() {
+		if f.consumeRef(s) {
+			return sawNumeric
+		}
+	}
+
 	// Precision.
 	if f.pos < len(f.format) && f.format[f.pos] == '.' {
 		f.pos++
@@ -255,6 +290,13 @@ flagsDone:
 			s.prec, s.hasPrec = p, true
 		} else {
 			s.prec, s.hasPrec = 0, true // ".": precision zero
+		}
+	}
+
+	// A %<name>/%{name} reference may sit between the precision and the verb.
+	if f.atRef() {
+		if f.consumeRef(s) {
+			return sawNumeric
 		}
 	}
 
