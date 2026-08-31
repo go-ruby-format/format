@@ -147,8 +147,10 @@ func ensureDecimalPoint(s string) string {
 
 // formatHexFloat renders a float with the a/A hexadecimal-float conversion,
 // matching MRI/C: 0x1.<hex>p±d (lowercase) or 0X1.<HEX>P±D (uppercase), with an
-// optional precision limiting the fractional hex digits.
-func formatHexFloat(x float64, verb byte, hasPrec bool, prec int) string {
+// optional precision limiting the fractional hex digits. hash requests the
+// alternate (#) form, which forces a decimal point even when no fractional hex
+// digit remains ("%#a" of 16.0 -> "0x1.p+4").
+func formatHexFloat(x float64, verb byte, hasPrec bool, prec int, hash bool) string {
 	p := -1
 	if hasPrec {
 		p = prec
@@ -166,6 +168,10 @@ func formatHexFloat(x float64, verb byte, hasPrec bool, prec int) string {
 	mant, pc, sign, exp := s[:i], s[i], s[i+1], s[i+2:]
 	for len(exp) > 1 && exp[0] == '0' {
 		exp = exp[1:]
+	}
+	if hash && !strings.ContainsRune(mant, '.') {
+		// Alternate form forces the radix point after the leading hex digit.
+		mant += "."
 	}
 	return mant + string(pc) + string(sign) + exp
 }

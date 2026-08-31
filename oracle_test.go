@@ -97,6 +97,12 @@ func buildCorpus() []caseT {
 		c("%a", 1.0), c("%A", 255.5), c("%a", 0.5), c("%a", -1.5), c("%a", 0.0),
 		c("%a", 3.14), c("%a", 1024.0), c("%.2a", 3.14), c("%a", 2.0),
 		c("%.0a", 3.14), c("%a", inf), c("%a", nan),
+		// Alternate form (#) forces the radix point; a body that already has one
+		// is unchanged. Zero-fill ('0' flag with a width) pads after the "0x"/"0X"
+		// prefix, with the sign flags.
+		c("%#a", 16.0), c("%#A", 16.0), c("%#a", 3.14), c("%#.0a", 3.14),
+		c("%020a", 12.5), c("%020a", -12.5), c("%+020a", 12.5), c("%030A", 255.5),
+		c("%-020a|", 12.5),
 
 		// String: s and precision/width.
 		c("%s", "hi"), c("%5s", "hi"), c("%-5s|", "hi"), c("%.3s", "hello"),
@@ -134,6 +140,11 @@ func buildCorpus() []caseT {
 		c("%-*d|", 5, 42), c("%.*f", 2, 3.14159), c("%*d", -5, 42),
 		c("%.*f", -1, 3.14159), c("%*.*f", 8, 2, 3.14159), c("%2$04d|%1$+d", 5, 7),
 		c("%2$d %2$d", 1, 2), c("%1$*2$d", 5, 3),
+		// '*'-supplied width and precision drawn from numbered args, with a
+		// separate numbered value argument after them: a negative width implies
+		// left-justification and a negative precision is ignored.
+		c("%*1$.*2$3$d", 10, 5, 1), c("%*1$.*2$3$d", -10, 5, 1),
+		c("%*1$.*2$3$d", 10, -5, 1),
 
 		// String coercion for numeric verbs.
 		c("%d", "  42  "), c("%d", "0x1A"), c("%d", "0b101"), c("%d", "1_000"),
@@ -185,6 +196,9 @@ var errCorpus = []struct {
 	{"%s%s", []any{"a"}, "ArgumentError", "too few arguments"},
 	{"%2$s", []any{"a"}, "ArgumentError", "too few arguments"},
 	{"%*d", nil, "ArgumentError", "too few arguments"},
+	// A width or precision whose digit run overflows an int is "too big".
+	{"%999999999999999999999d", []any{1}, "ArgumentError", "width too big"},
+	{"%.999999999999999999999s", []any{"hi"}, "ArgumentError", "precision too big"},
 }
 
 // rubyAvailable reports whether a usable MRI oracle is on PATH. The corpus
