@@ -63,6 +63,11 @@ const (
 type NamedArgs struct {
 	keys   []string
 	values map[string]Value
+	// deflt, when set, resolves a reference whose key is absent from values —
+	// the hook through which a host (rbgo) applies Ruby's Hash#default /
+	// default_proc. It returns the default Value and true, or false to leave the
+	// key unresolved (the engine then raises KeyError).
+	deflt func(name string) (Value, bool)
 }
 
 // NewNamedArgs builds a NamedArgs from a name->Value map. Iteration order is
@@ -76,10 +81,23 @@ func NewNamedArgs(m map[string]Value) *NamedArgs {
 	return &NamedArgs{keys: keys, values: m}
 }
 
-// get returns the Value for key and whether it is present.
+// SetDefault registers a resolver consulted when a %<name>/%{name} reference
+// names a key absent from the map — the hook through which rbgo applies Ruby's
+// Hash#default / default_proc. fn returns the default Value and true, or false
+// to leave the key unresolved (so the engine raises KeyError, as MRI does when
+// the default is nil).
+func (n *NamedArgs) SetDefault(fn func(name string) (Value, bool)) { n.deflt = fn }
+
+// get returns the Value for key and whether it is present, consulting the
+// host default resolver (SetDefault) for a key missing from the map.
 func (n *NamedArgs) get(key string) (Value, bool) {
-	v, ok := n.values[key]
-	return v, ok
+	if v, ok := n.values[key]; ok {
+		return v, true
+	}
+	if n.deflt != nil {
+		return n.deflt(key)
+	}
+	return nil, false
 }
 
 // Kind reports KindHash.
@@ -118,8 +136,8 @@ func (n *NamedArgs) Float() (float64, error, bool) { return 0, nil, false }
 // not construct Values by hand.
 type goValue struct {
 	kind  Kind
-	s     string  // for KindString/KindSymbol/KindOther: the textual value
-	i64   int64   // for KindInteger when i == nil: the small-integer value
+	s     string   // for KindString/KindSymbol/KindOther: the textual value
+	i64   int64    // for KindInteger when i == nil: the small-integer value
 	i     *big.Int // for KindInteger: set only for a magnitude exceeding int64
 	f     float64
 	cls   string

@@ -263,7 +263,10 @@ flagsDone:
 			w = -w
 		}
 		s.width, s.hasWidth = w, true
-	} else if w, ok := f.parseNumber(); ok {
+	} else if w, ok, overflow := f.parseNumber(); ok {
+		if overflow {
+			panic(argumentError("width too big"))
+		}
 		sawNumeric = true
 		s.width, s.hasWidth = w, true
 	}
@@ -286,7 +289,10 @@ flagsDone:
 				s.prec, s.hasPrec = p, true
 			}
 			// A negative '.*' precision is treated as if omitted (MRI).
-		} else if p, ok := f.parseNumber(); ok {
+		} else if p, ok, overflow := f.parseNumber(); ok {
+			if overflow {
+				panic(argumentError("precision too big"))
+			}
 			s.prec, s.hasPrec = p, true
 		} else {
 			s.prec, s.hasPrec = 0, true // ".": precision zero
@@ -299,6 +305,12 @@ flagsDone:
 			return sawNumeric
 		}
 	}
+
+	// A "n$" argument reference for the value may follow '*'-supplied width and
+	// precision, as in "%*1$.*2$3$d" where 3$ selects the value while 1$/2$ feed
+	// the width and precision — the '$'-forms take the index but leave s.argNum
+	// unset, so this records it before the verb is read.
+	f.maybeArgNum(s)
 
 	if f.pos < len(f.format) {
 		s.verb = f.format[f.pos]
@@ -329,18 +341,23 @@ func (f *formatter) maybeArgNum(s *spec) {
 }
 
 // parseNumber consumes a run of decimal digits at f.pos, returning its value
-// and true, or 0/false when no digit is present.
-func (f *formatter) parseNumber() (int, bool) {
+// and true, or 0/false when no digit is present. overflow is true when the digit
+// run does not fit in an int (a width/precision "too big" for MRI), in which
+// case the numeric value is meaningless and the caller raises.
+func (f *formatter) parseNumber() (n int, ok, overflow bool) {
 	j := f.pos
 	for j < len(f.format) && f.format[j] >= '0' && f.format[j] <= '9' {
 		j++
 	}
 	if j == f.pos {
-		return 0, false
+		return 0, false, false
 	}
-	n, _ := strconv.Atoi(f.format[f.pos:j])
+	v, err := strconv.Atoi(f.format[f.pos:j])
 	f.pos = j
-	return n, true
+	if err != nil {
+		return 0, true, true
+	}
+	return v, true, false
 }
 
 // starInt fetches the integer for a '*' width or precision. A "*n$" form takes
@@ -711,7 +728,7 @@ func (f *formatter) renderFloat(s *spec) {
 		}
 		body = formatG(math.Abs(x), verb, gp, s.hashFlag)
 	case 'a', 'A':
-		body = formatHexFloat(math.Abs(x), verb, s.hasPrec, prec)
+		body = formatHexFloat(math.Abs(x), verb, s.hasPrec, prec, s.hashFlag)
 	}
 	if s.hashFlag && (verb == 'f' || verb == 'e' || verb == 'E') && !strings.ContainsAny(body, ".") {
 		// Alternate form forces a decimal point.
@@ -776,7 +793,16 @@ func (f *formatter) padFloat(s *spec, sign, body string) {
 	case s.minusFlag:
 		f.b.WriteString(full + strings.Repeat(" ", pad))
 	case s.zeroFlag:
-		f.b.WriteString(sign + strings.Repeat("0", pad) + body)
+		// A hexadecimal-float body carries its own "0x"/"0X" radix prefix, which
+		// must stay ahead of the zero fill ("%020a" -> "0x000…1.9p+3"); an
+		// ordinary float body has no such prefix, so the split is a no-op there.
+		prefix, rest := body, ""
+		if len(body) >= 2 && body[0] == '0' && (body[1] == 'x' || body[1] == 'X') {
+			prefix, rest = body[:2], body[2:]
+		} else {
+			prefix, rest = "", body
+		}
+		f.b.WriteString(sign + prefix + strings.Repeat("0", pad) + rest)
 	default:
 		f.b.WriteString(strings.Repeat(" ", pad) + full)
 	}
@@ -799,10 +825,30 @@ func (f *formatter) renderStr(s *spec, str string) {
 	f.b.WriteString(str)
 }
 
+// charCoercer is an optional Value hook for the %c conversion. A host value
+// (e.g. a Ruby user object) that implements it resolves itself to the string or
+// integer operand %c needs, applying the host's own argument coercion — for
+// rbgo, MRI's to_str-then-to_int protocol. It returns the resolved Value and
+// true, or false to let the engine use its Kind-based path (a string's first
+// character, otherwise an integer code point). A coercion that fails (e.g.
+// to_str returning a non-string) raises through the host, and that panic
+// propagates out of Format unchanged (it is not a *Error).
+type charCoercer interface {
+	CoerceChar() (Value, bool)
+}
+
 // renderChar formats %c: an integer code point or a one-character string,
 // padded by width like %s. An out-of-range code point is an ArgumentError.
 func (f *formatter) renderChar(s *spec) {
 	v := f.nextArg(s)
+	// A host object resolves its own %c operand (Ruby's to_str-then-to_int
+	// coercion) into a plain string or integer Value; the Kind-based rendering
+	// below then applies uniformly.
+	if cc, ok := v.(charCoercer); ok {
+		if rv, resolved := cc.CoerceChar(); resolved {
+			v = rv
+		}
+	}
 	var str string
 	switch v.Kind() {
 	case KindString:

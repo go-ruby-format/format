@@ -94,6 +94,66 @@ func TestHostValueErrors(t *testing.T) {
 
 func iVal(n int) Value { return toValue(n) }
 
+// charHost is a host Value that resolves its own %c operand through the
+// charCoercer hook, standing in for an rbgo user object whose to_str/to_int
+// coercion happens on the host side.
+type charHost struct {
+	hostValue
+	resolved Value
+	ok       bool
+}
+
+func (c charHost) CoerceChar() (Value, bool) { return c.resolved, c.ok }
+
+func TestCharCoercerHook(t *testing.T) {
+	// A host that resolves %c to a String uses that string's first character.
+	toStr := charHost{
+		hostValue: hostValue{kind: KindOther, cls: "Object"},
+		resolved:  hostValue{kind: KindString, s: "abc", cls: "String"},
+		ok:        true,
+	}
+	if got, err := Format("%c", []Value{toStr}, nil); err != nil || got != "a" {
+		t.Fatalf("charCoercer string: got %q err %v", got, err)
+	}
+	// A host that resolves %c to an Integer uses it as the code point.
+	toInt := charHost{
+		hostValue: hostValue{kind: KindOther, cls: "Object"},
+		resolved:  hostValue{kind: KindInteger, cls: "Integer", i: big.NewInt(90), iok: true},
+		ok:        true,
+	}
+	if got, err := Format("%c", []Value{toInt}, nil); err != nil || got != "Z" {
+		t.Fatalf("charCoercer int: got %q err %v", got, err)
+	}
+	// A host that declines to resolve falls back to the engine's Kind-based path
+	// (here the embedded integer view).
+	decline := charHost{
+		hostValue: hostValue{kind: KindInteger, cls: "Integer", i: big.NewInt(65), iok: true},
+		ok:        false,
+	}
+	if got, err := Format("%c", []Value{decline}, nil); err != nil || got != "A" {
+		t.Fatalf("charCoercer decline: got %q err %v", got, err)
+	}
+}
+
+func TestNamedArgsDefault(t *testing.T) {
+	// A reference to a key present in the map wins over the default resolver.
+	na := NewNamedArgs(map[string]Value{"a": toValue(1)})
+	na.SetDefault(func(string) (Value, bool) { return toValue(99), true })
+	if got, err := Format("%<a>d", []Value{na}, na); err != nil || got != "1" {
+		t.Fatalf("present key: got %q err %v", got, err)
+	}
+	// A reference to an absent key is resolved by the default (Hash#default).
+	if got, err := Format("%{missing}", []Value{na}, na); err != nil || got != "99" {
+		t.Fatalf("default hit: got %q err %v", got, err)
+	}
+	// A default resolver that declines leaves the key unresolved: KeyError.
+	nb := NewNamedArgs(map[string]Value{})
+	nb.SetDefault(func(string) (Value, bool) { return nil, false })
+	if _, err := Format("%{missing}", []Value{nb}, nb); err == nil || err.(*Error).Class != "KeyError" {
+		t.Fatalf("default miss: want KeyError, got %v", err)
+	}
+}
+
 func TestErrorString(t *testing.T) {
 	e := &Error{Class: "ArgumentError", Message: "too few arguments"}
 	if e.Error() != "ArgumentError: too few arguments" {
