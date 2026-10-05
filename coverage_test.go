@@ -70,21 +70,21 @@ func TestBignumSlowPath(t *testing.T) {
 		format, want string
 		arg          any
 	}{
-		{"%d", "12345678901234567890", b},                 // signed base-10, positive
-		{"%d", "-12345678901234567890", n},                // signed base-10, negative
-		{"%+x", "+ab54a98ceb1f0ad2", b},                   // signed (plus) non-decimal base
-		{"% x", " ab54a98ceb1f0ad2", b},                   // signed (space) non-decimal base
-		{"%+#x", "+0xab54a98ceb1f0ad2", b},                // signed, alternate-form prefix
-		{"%x", "ab54a98ceb1f0ad2", b},                     // unsigned, positive
-		{"%#x", "0xab54a98ceb1f0ad2", b},                  // unsigned, positive, alternate form
-		{"%x", "..f54ab567314e0f52e", n},                  // unsigned, negative (two's-complement dots)
-		{"%#x", "0x..f54ab567314e0f52e", n},               // negative dotted, alternate form (base != 8)
-		{"%#o", "..76522532547142470172456", n},           // negative dotted octal (base == 8, no extra prefix)
-		{"%X", "..F54AB567314E0F52E", n},                  // uppercase negative dotted
-		{"%o", "1255245230635307605322", b},               // octal, positive
-		{"%s", "12345678901234567890", b},                 // to_s of a Bignum (goValue.intString)
-		{"%f", "9223372036854775808.000000", p63},         // Bignum -> Float (goValue.Float)
-		{"%e", "9.223372e+18", p63},                       // Bignum -> Float, exponent form
+		{"%d", "12345678901234567890", b},         // signed base-10, positive
+		{"%d", "-12345678901234567890", n},        // signed base-10, negative
+		{"%+x", "+ab54a98ceb1f0ad2", b},           // signed (plus) non-decimal base
+		{"% x", " ab54a98ceb1f0ad2", b},           // signed (space) non-decimal base
+		{"%+#x", "+0xab54a98ceb1f0ad2", b},        // signed, alternate-form prefix
+		{"%x", "ab54a98ceb1f0ad2", b},             // unsigned, positive
+		{"%#x", "0xab54a98ceb1f0ad2", b},          // unsigned, positive, alternate form
+		{"%x", "..f54ab567314e0f52e", n},          // unsigned, negative (two's-complement dots)
+		{"%#x", "0x..f54ab567314e0f52e", n},       // negative dotted, alternate form (base != 8)
+		{"%#o", "..76522532547142470172456", n},   // negative dotted octal (base == 8, no extra prefix)
+		{"%X", "..F54AB567314E0F52E", n},          // uppercase negative dotted
+		{"%o", "1255245230635307605322", b},       // octal, positive
+		{"%s", "12345678901234567890", b},         // to_s of a Bignum (goValue.intString)
+		{"%f", "9223372036854775808.000000", p63}, // Bignum -> Float (goValue.Float)
+		{"%e", "9.223372e+18", p63},               // Bignum -> Float, exponent form
 	}
 	for _, c := range cases {
 		got, err := Sprintf(c.format, c.arg)
